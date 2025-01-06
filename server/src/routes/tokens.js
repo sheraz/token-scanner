@@ -81,73 +81,110 @@ const formatTokenData = async (dexData) => {
     }
   };
 
-router.get('/', async (req, res) => {
-  try {
-    const { minHolders, minLiquidity, sort } = req.query;
-    
-    console.log('Received request with params:', { minHolders, minLiquidity, sort });
-
-    // Get trending pairs from DexScreener
-    const response = await axios.get('https://api.dexscreener.com/latest/dex/search?q=pepe', {
-      timeout: 5000
-    });
-
-    if (!response.data || !response.data.pairs) {
-      throw new Error('Invalid response from DexScreener');
-    }
-
-    // Changed from 5 to 10
-    const topPairs = response.data.pairs.slice(0, 10);  // Process more tokens
-    
-    // Format tokens and get holder information
-    const tokens = [];
-    for (const pair of topPairs) {
-      const formattedToken = await formatTokenData(pair);
-      if (formattedToken) tokens.push(formattedToken);
-      // Add small delay between processing tokens
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-
-    // Filter based on criteria
-    const filteredTokens = tokens.filter(token => {
+  router.get('/', async (req, res) => {
+    try {
+      const { minHolders, minLiquidity, sort } = req.query;
+      
+      console.log('Received request with params:', { minHolders, minLiquidity, sort });
+  
+      // Multiple search endpoints for redundancy
+      const endpoints = [
+        'https://api.dexscreener.com/latest/dex/search?q=pepe',
+        'https://api.dexscreener.com/latest/dex/tokens/trending',
+        'https://api.dexscreener.com/latest/dex/tokens/eth'
+      ];
+  
+      let allPairs = [];
+      for (const endpoint of endpoints) {
+        try {
+          const response = await axios.get(endpoint, {
+            timeout: 5000,
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'Token-Scanner/1.0'
+            }
+          });
+  
+          if (response.data && response.data.pairs && Array.isArray(response.data.pairs)) {
+            console.log(`Found ${response.data.pairs.length} pairs from ${endpoint}`);
+            allPairs = [...allPairs, ...response.data.pairs];
+          }
+        } catch (error) {
+          console.warn(`Failed to fetch from ${endpoint}:`, error.message);
+          continue; // Try next endpoint
+        }
+      }
+  
+      if (allPairs.length === 0) {
+        console.warn('No pairs found from any endpoint');
+        return res.json([]);
+      }
+  
+      // Deduplicate pairs by contract address
+      allPairs = Array.from(new Map(allPairs.map(pair => 
+        [pair.baseToken?.address, pair]
+      )).values());
+  
+      // Take top 10 pairs by liquidity
+      const topPairs = allPairs
+        .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))
+        .slice(0, 10);
+  
+      // Format tokens and get holder information
+      const tokens = [];
+      for (const pair of topPairs) {
+        try {
+          const formattedToken = await formatTokenData(pair);
+          if (formattedToken) {
+            tokens.push(formattedToken);
+            // Add small delay between processing tokens
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        } catch (error) {
+          console.error(`Failed to format token ${pair.baseToken?.symbol}:`, error.message);
+          continue;
+        }
+      }
+  
+      // Rest of your code remains the same
+      const filteredTokens = tokens.filter(token => {
         const meetsLiquidity = token.liquidity >= (parseFloat(minLiquidity) || 0);
         const meetsHolders = token.holders >= (parseFloat(minHolders) || 0);
         console.log(`Filtering ${token.name}: liquidity=${token.liquidity}, holders=${token.holders}, meets criteria=${meetsLiquidity && meetsHolders}`);
         return meetsLiquidity && meetsHolders;
-    });
-
-    console.log(`Found ${filteredTokens.length} tokens after filtering`);
-
-    // Handle sorting
-    if (sort) {
-      const sortOptions = sort.split(',');
-      filteredTokens.sort((a, b) => {
-        for (const option of sortOptions) {
-          switch (option) {
-            case 'trending':
-              return (b.volume24h || 0) - (a.volume24h || 0);
-            case 'holders':
-              return (b.holders || 0) - (a.holders || 0);
-            case 'liquidity':
-              return (b.liquidity || 0) - (a.liquidity || 0);
-            case 'newest':
-              return new Date(b.created || 0) - new Date(a.created || 0);
-            default:
-              return 0;
+      });
+  
+      console.log(`Found ${filteredTokens.length} tokens after filtering`);
+  
+      if (sort) {
+        const sortOptions = sort.split(',');
+        filteredTokens.sort((a, b) => {
+          for (const option of sortOptions) {
+            switch (option) {
+              case 'trending':
+                return (b.volume24h || 0) - (a.volume24h || 0);
+              case 'holders':
+                return (b.holders || 0) - (a.holders || 0);
+              case 'liquidity':
+                return (b.liquidity || 0) - (a.liquidity || 0);
+              case 'newest':
+                return new Date(b.created || 0) - new Date(a.created || 0);
+              default:
+                return 0;
+            }
           }
-        }
-        return 0;
+          return 0;
+        });
+      }
+  
+      res.json(filteredTokens);
+    } catch (error) {
+      console.error('Server error processing request:', error);
+      res.status(500).json({ 
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
     }
-
-    res.json(filteredTokens);
-  } catch (error) {
-    console.error('Server error processing request:', error);
-    res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
+  });
 
 module.exports = router;
