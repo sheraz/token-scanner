@@ -4,6 +4,8 @@ const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
+const EthereumService = require('./ethereumService');
+const SolanaService = require('./solanaService');
 
 class WhaleAnalyzer {
   constructor() {
@@ -23,6 +25,9 @@ class WhaleAnalyzer {
       fs.mkdirSync(this.logDir, { recursive: true });
       console.log('Created log directory at:', this.logDir);
     }
+
+    this.ethereumService = new EthereumService();
+    this.solanaService = new SolanaService();
   }
 
   async getTopHolders(tokenAddress, tokenSymbol) {
@@ -35,28 +40,25 @@ class WhaleAnalyzer {
         }
       }
 
-      const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
-      const response = await axios.get(dexUrl);
-      
       let holderCount = 0;
       let totalSupply = 0;
 
       // Get holder count based on chain
       if (tokenAddress.startsWith('0x')) {
         const ethData = await this.ethereumService.getHolderCount(tokenAddress);
-        holderCount = ethData.holderCount;
+        holderCount = parseInt(ethData.holderCount) || 0;
       } else if (tokenAddress.length === 44 || tokenAddress.length === 43) {
         const solData = await this.solanaService.getHolderCount(tokenAddress);
-        holderCount = solData.holderCount;
+        holderCount = parseInt(solData.holderCount) || 0;
       }
 
+      // Get token data from DexScreener
+      const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+      const response = await axios.get(dexUrl);
+      
       if (response.data.pairs && response.data.pairs.length > 0) {
         const pair = response.data.pairs[0];
         totalSupply = parseFloat(pair.totalSupply || 0);
-        
-        if (pair.liquidity?.usd > 50000) {
-          console.log(`\n🔍 ${tokenSymbol.padEnd(8)} 💰 $${pair.liquidity.usd.toLocaleString()} 👥 ${holderCount.toLocaleString() || 'Unknown'} holders`);
-        }
       }
 
       const result = { totalSupply, holderCount };
@@ -67,7 +69,7 @@ class WhaleAnalyzer {
 
       return result;
     } catch (error) {
-      console.error(`❌ Error processing ${tokenSymbol}:`, error.message);
+      console.error(`Error processing ${tokenSymbol}: ${error.message}`);
       return { totalSupply: 0, holderCount: 0 };
     }
   }
@@ -128,8 +130,6 @@ class WhaleAnalyzer {
         whaleConcentration: whaleData.whaleConcentration || 0
       };
 
-      console.log(`Formatted token data for ${tokenSymbol}:`, result);
-      
       await this.log(tokenSymbol, {
         type: 'formatted_data',
         ...result
