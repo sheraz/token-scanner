@@ -5,6 +5,9 @@ require('dotenv').config();
 const SocialAnalyzer = require('../services/socialAnalysis');
 const socialAnalyzer = new SocialAnalyzer(process.env.TWITTER_BEARER_TOKEN);
 const WhaleAnalyzer = require('../services/whaleAnalysis');
+const EthereumService = require('../services/ethereumService');
+const ethereumService = new EthereumService();
+const SolanaService = require('../services/solanaService');
 
 // Create a single instance to be used throughout the app
 const whaleAnalyzer = new WhaleAnalyzer();
@@ -59,52 +62,17 @@ async function getHolderCount(tokenAddress) {
   try {
     if (tokenAddress.startsWith('0x')) {
       console.log(`Fetching Ethereum holders for: ${tokenAddress}`);
-      try {
-        const response = await axios.get(`https://api.etherscan.io/api`, {
-          params: {
-            module: 'stats',
-            action: 'tokensupply',
-            contractaddress: tokenAddress,
-            apikey: process.env.ETHERSCAN_API_KEY
-          }
-        });
-
-        console.log('Etherscan response:', JSON.stringify(response.data, null, 2));
-
-        if (response.data.status === '1') {
-          const supply = BigInt(response.data.result);
-          return supply > BigInt(0) ? 1 : 0;  // Using BigInt for large numbers
-        }
-      } catch (error) {
-        console.error('Etherscan error:', error.message);
-      }
-      return 0;
+      const result = await ethereumService.getHolderCount(tokenAddress);
+      return result.holderCount;
     } else if (tokenAddress.length === 44 || tokenAddress.length === 43) {
-      try {
-        console.log(`Fetching Solana token data for: ${tokenAddress}`);
-        const response = await axios.post('https://api.mainnet-beta.solana.com', {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getTokenSupply',  // Back to using getTokenSupply
-          params: [tokenAddress]
-        }, {
-          timeout: 20000,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-
-        if (response.data?.result?.value) {
-          const supply = response.data.result.value;
-          return supply.uiAmount > 0 ? 1 : 0;
-        }
-      } catch (error) {
-        console.error('Solana error:', error.message);
-      }
+      // Handle Solana tokens
+      const solanaService = new SolanaService();
+      const result = await solanaService.getHolderCount(tokenAddress);
+      return result.holderCount;
     }
     return 0;
   } catch (error) {
-    console.warn(`Failed to get holder count for ${tokenAddress}:`, error.message);
+    console.error(`Error in getHolderCount:`, error);
     return 0;
   }
 }
@@ -185,6 +153,29 @@ const formatTokenData = async (dexData) => {
   }
 };
 
+// Get pairs from DexScreener with proper error handling
+async function searchPairs() {
+    try {
+        const searches = ['meme', 'memecoin'];  // Keep our working search terms
+        let allPairs = [];
+        
+        for (const term of searches) {
+            console.log(`Searching for: ${term}`);
+            const response = await axios.get('https://api.dexscreener.com/latest/dex/search', {
+                params: { q: term }
+            });
+            if (response.data.pairs) {
+                allPairs = [...allPairs, ...response.data.pairs];
+            }
+        }
+        
+        return allPairs;
+    } catch (error) {
+        console.error('Error searching pairs:', error.message);
+        return [];
+    }
+}
+
 router.get('/', async (req, res) => {
   try {
     const { minHolders = 0, minLiquidity = 0, sort } = req.query;
@@ -192,55 +183,68 @@ router.get('/', async (req, res) => {
     console.log('\n🔎 Starting token search...');
     console.log(`Parameters: minLiquidity=$${minLiquidity}, minHolders=${minHolders}\n`);
 
-    const endpoints = [
-      'https://api.dexscreener.com/latest/dex/tokens/trending',
-      'https://api.dexscreener.com/latest/dex/tokens/ethereum',
-      'https://api.dexscreener.com/latest/dex/search?q=meme',
-      'https://api.dexscreener.com/latest/dex/search?q=memecoin'
-    ];
-
-    let allPairs = [];
-    for (const endpoint of endpoints) {
-      try {
-        const response = await fetchWithRetry(endpoint, {
-          timeout: 20000,
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0'
-          }
-        });
-
-        if (response.data && response.data.pairs && Array.isArray(response.data.pairs)) {
-          console.log(`Found ${response.data.pairs.length} pairs from ${endpoint}`);
-          // Only filter for valid addresses, not liquidity yet
-          const validPairs = response.data.pairs.filter(pair => pair.baseToken?.address);
-          allPairs = [...allPairs, ...validPairs];
-        }
-      } catch (error) {
-        console.warn(`Failed to fetch from ${endpoint}:`, error.message);
-        continue;
-      }
-    }
-
-    // Better deduplication using a Map with composite key
-    const uniquePairs = new Map();
-    for (const pair of allPairs) {
-      const key = `${pair.baseToken?.symbol}_${pair.baseToken?.address}`;
-      if (!uniquePairs.has(key) || pair.liquidity?.usd > uniquePairs.get(key).liquidity?.usd) {
-        uniquePairs.set(key, pair);
-      }
-    }
-    allPairs = Array.from(uniquePairs.values());
+    let allPairs = await searchPairs();
 
     console.log(`Total unique pairs found: ${allPairs.length}`);
-    console.log('Liquidity range:', {
-      min: Math.min(...allPairs.map(p => p.liquidity?.usd || 0)),
-      max: Math.max(...allPairs.map(p => p.liquidity?.usd || 0))
+    
+    // Debug liquidity values
+    allPairs.forEach(pair => {
+      console.log(`${pair.baseToken?.symbol}: Liquidity = $${pair.liquidity?.usd || 0}`);
     });
 
-    // Now apply liquidity filter
-    allPairs = allPairs.filter(pair => pair.liquidity?.usd >= minLiquidity);
-    console.log(`Pairs after liquidity filter (>= ${minLiquidity}): ${allPairs.length}`);
+    // Debug creation dates with human-readable format
+    console.log('\nPair Creation Dates:');
+    allPairs.forEach(pair => {
+        const date = new Date(pair.pairCreatedAt);
+        console.log(`${pair.baseToken?.symbol}: Created ${date.toLocaleString()} (${pair.pairCreatedAt})`);
+    });
+
+    // Filter by creation time (last 120 days)
+    const oneHundredTwentyDaysAgo = Date.now() - (120 * 24 * 60 * 60 * 1000);
+    const timeFiltered = allPairs.filter(pair => {
+        const pairCreatedAt = new Date(pair.pairCreatedAt).getTime();
+        return pairCreatedAt > oneHundredTwentyDaysAgo;
+    });
+
+    console.log(`\nPairs after time filter (last 120 days): ${timeFiltered.length}`);
+
+    // After getting timeFiltered pairs...
+    console.log('\n🔍 Debugging Holder Data:');
+    
+    // Look at first 3 tokens in detail
+    timeFiltered.slice(0, 3).forEach(pair => {
+        console.log(`\n${pair.baseToken?.symbol || 'Unknown Token'}:`);
+        console.log('1. Full Token Data:');
+        console.log(JSON.stringify(pair.baseToken, null, 2));
+        
+        console.log('\n2. Holder-related fields:');
+        console.log('- pair.holders:', pair.holders);
+        console.log('- pair.baseToken.holders:', pair.baseToken?.holders);
+        console.log('- pair.baseToken.holderCount:', pair.baseToken?.holderCount);
+        
+        console.log('\n3. Token Address:', pair.baseToken?.address);
+    });
+
+    // Now apply liquidity, market cap, and holders filters
+    allPairs = timeFiltered.filter(pair => {
+        const liquidity = parseFloat(pair.liquidity?.usd) || 0;
+        const marketCap = parseFloat(pair.fdv) || 0;
+        const holders = parseInt(pair.holders) || 0;
+        
+        const meetsLiquidity = liquidity >= minLiquidity;
+        const meetsMarketCap = marketCap >= 300000 && marketCap <= 15000000;
+        const meetsHolders = holders >= minHolders;
+
+        if (!meetsLiquidity) {
+            console.log(`Filtered out ${pair.baseToken?.symbol}: Liquidity $${liquidity} < $${minLiquidity}`);
+        } else if (!meetsMarketCap) {
+            console.log(`Filtered out ${pair.baseToken?.symbol}: Market Cap $${marketCap} outside range $300k-$15M`);
+        } else if (!meetsHolders) {
+            console.log(`Filtered out ${pair.baseToken?.symbol}: Holders ${holders} < ${minHolders}`);
+        }
+
+        return meetsLiquidity && meetsMarketCap && meetsHolders;
+    });
 
     // Format token data with enhanced information
     const tokenPromises = allPairs.map(formatTokenData);
