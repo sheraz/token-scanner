@@ -91,6 +91,9 @@ const formatTokenData = async (dexData) => {
       whaleAnalyzer.calculateWhaleConcentration(dexData.totalSupply, dexData.holders)
     ]);
 
+    console.log(`Holders data for ${dexData.baseToken.symbol}:`, holdersData);
+    console.log(`Whale concentration for ${dexData.baseToken.symbol}:`, whaleConcentration);
+
     const creationDate = new Date(dexData.pairCreatedAt || new Date());
     const ageInDays = Math.floor((Date.now() - creationDate.getTime()) / (1000 * 60 * 60 * 24));
 
