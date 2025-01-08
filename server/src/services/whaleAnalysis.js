@@ -32,10 +32,12 @@ class WhaleAnalyzer {
 
   async getTopHolders(tokenAddress, tokenSymbol) {
     try {
+      console.log(`Fetching holders for: ${tokenSymbol} (${tokenAddress})`);
       const cacheKey = `holders_${tokenAddress}`;
       if (this.cache.has(cacheKey)) {
         const cached = this.cache.get(cacheKey);
         if (Date.now() - cached.timestamp < this.cacheTimeout) {
+          console.log(`Using cached data for: ${tokenSymbol}`);
           return cached.data;
         }
       }
@@ -43,18 +45,19 @@ class WhaleAnalyzer {
       let holderCount = 0;
       let totalSupply = 0;
 
-      // Get holder count based on chain
       if (tokenAddress.startsWith('0x')) {
         const ethData = await this.ethereumService.getHolderCount(tokenAddress);
+        console.log(`Ethereum data for ${tokenSymbol}:`, ethData);
         holderCount = parseInt(ethData.holderCount) || 0;
       } else if (tokenAddress.length === 44 || tokenAddress.length === 43) {
         const solData = await this.solanaService.getHolderCount(tokenAddress);
+        console.log(`Solana data for ${tokenSymbol}:`, solData);
         holderCount = parseInt(solData.holderCount) || 0;
       }
 
-      // Get token data from DexScreener
       const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
       const response = await axios.get(dexUrl);
+      console.log(`DexScreener response for ${tokenSymbol}:`, response.data);
       
       if (response.data.pairs && response.data.pairs.length > 0) {
         const pair = response.data.pairs[0];
@@ -67,6 +70,7 @@ class WhaleAnalyzer {
         data: result
       });
 
+      console.log(`Holders for ${tokenSymbol}: ${holderCount}, Total Supply: ${totalSupply}`);
       return result;
     } catch (error) {
       console.error(`Error processing ${tokenSymbol}: ${error.message}`);
@@ -119,7 +123,9 @@ class WhaleAnalyzer {
     const top3Sum = holders.slice(0, 3)
       .reduce((sum, h) => sum + (h.balance || 0), 0);
     
-    return (top3Sum / totalSupply) * 100;
+    const concentration = (top3Sum / totalSupply) * 100;
+    console.log(`Whale concentration: ${concentration}%`);
+    return concentration;
   }
 
   async formatTokenData(tokenSymbol, liquidity, whaleData = {}) {

@@ -11,36 +11,25 @@ class EthereumService {
   async getHolderCount(tokenAddress) {
     console.log('EthereumService.getHolderCount called for:', tokenAddress);
     try {
-      // Check cache first
       const cacheKey = `holders_${tokenAddress}`;
       const cached = this.cache.get(cacheKey);
       if (cached && Date.now() - cached.timestamp < this.CACHE_DURATION) {
         return cached.data;
       }
 
-      // Try DexScreener first
-      const dexResponse = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
+      // Example using Etherscan (replace with actual API call)
+      const etherscanResponse = await axios.get(`https://api.etherscan.io/api?module=stats&action=tokenholdercount&contractaddress=${tokenAddress}&apikey=YourApiKey`);
       
-      if (dexResponse.data.pairs && dexResponse.data.pairs.length > 0) {
-        const pair = dexResponse.data.pairs[0];
-        const txns24h = parseInt(pair.txns?.h24 || 0);
-        
-        // If there are recent transactions, there must be holders
-        const result = { 
-          success: true, 
-          holderCount: txns24h > 0 ? Math.max(2, Math.ceil(txns24h / 10)) : 1 
-        };
+      const holderCount = etherscanResponse.data.result || 0;
 
-        // Cache the result
-        this.cache.set(cacheKey, {
-          timestamp: Date.now(),
-          data: result
-        });
-        
-        return result;
-      }
+      const result = { success: true, holderCount: parseInt(holderCount) };
 
-      return { success: false, holderCount: 0 };
+      this.cache.set(cacheKey, {
+        timestamp: Date.now(),
+        data: result
+      });
+
+      return result;
     } catch (error) {
       console.error(`Error in EthereumService.getHolderCount:`, error);
       return { success: false, holderCount: 0 };

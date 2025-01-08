@@ -63,11 +63,13 @@ async function getHolderCount(tokenAddress) {
     if (tokenAddress.startsWith('0x')) {
       console.log(`Fetching Ethereum holders for: ${tokenAddress}`);
       const result = await ethereumService.getHolderCount(tokenAddress);
+      console.log(`Holders for ${tokenAddress}: ${result.holderCount}`);
       return result.holderCount;
     } else if (tokenAddress.length === 44 || tokenAddress.length === 43) {
       // Handle Solana tokens
       const solanaService = new SolanaService();
       const result = await solanaService.getHolderCount(tokenAddress);
+      console.log(`Holders for ${tokenAddress}: ${result.holderCount}`);
       return result.holderCount;
     }
     return 0;
@@ -84,26 +86,13 @@ const formatTokenData = async (dexData) => {
     }
 
     // Get ALL data before any logging
-    const [holders, whaleData, socialMetrics] = await Promise.all([
-      getHolderCount(dexData.baseToken.address),
+    const [holdersData, whaleConcentration] = await Promise.all([
       whaleAnalyzer.getTopHolders(dexData.baseToken.address, dexData.baseToken.symbol),
-      (async () => {
-        try {
-          const cacheKey = `social_${dexData.baseToken.symbol}`;
-          return await socialAnalyzer.analyzeCommunity(dexData.baseToken.symbol, cacheKey);
-        } catch (error) {
-          return {
-            tweetCount: 0,
-            uniqueUsers: 0,
-            engagementScore: 0,
-            hourlyDistribution: new Array(24).fill(0)
-          };
-        }
-      })()
+      whaleAnalyzer.calculateWhaleConcentration(dexData.totalSupply, dexData.holders)
     ]);
 
-    const createdDate = new Date(dexData.pairCreatedAt || new Date());
-    const ageInDays = Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+    const creationDate = new Date(dexData.pairCreatedAt || new Date());
+    const ageInDays = Math.floor((Date.now() - creationDate.getTime()) / (1000 * 60 * 60 * 24));
 
     const tokenData = {
       name: dexData.baseToken?.name || 'Unknown',
@@ -111,7 +100,7 @@ const formatTokenData = async (dexData) => {
       address: dexData.baseToken?.address,
       age: {
         days: ageInDays,
-        created: createdDate,
+        created: creationDate,
         isNew: ageInDays < 7
       },
       metrics: {
@@ -121,29 +110,15 @@ const formatTokenData = async (dexData) => {
         priceUsd: parseFloat(dexData.priceUsd || 0),
         volume24h: parseFloat(dexData.volume?.h24 || 0),
         holders: {
-          count: holders,
-          whaleConcentration: whaleData.whaleConcentration,
-          diamondHands: 0
+          count: holdersData.holderCount,
+          whaleConcentration: whaleConcentration
         }
-      },
-      socialMetrics,
-      links: {
-        website: null,
-        twitter: null,
-        telegram: null,
-        discord: null,
-        reddit: null
-      },
-      analysis: {
-        uniqueFeatures: [],
-        riskFactors: [],
-        communityStrength: 0
       }
     };
 
     // Log only once after all data is collected
     if (tokenData.metrics.liquidity >= 50000) {
-      console.log(`🔍 ${tokenData.symbol.padEnd(8)} 💰 $${tokenData.metrics.liquidity.toLocaleString()} 👥 ${holders.toLocaleString()} holders`);
+      console.log(`📈 ${tokenData.symbol.padEnd(8)} Market Cap: ${tokenData.metrics.marketCap} Liquidity: ${tokenData.metrics.liquidity} ⏰ ${ageInDays} days old 👥 ${tokenData.metrics.holders.count} holders 🐋 ${tokenData.metrics.holders.whaleConcentration}%`);
     }
 
     return tokenData;
@@ -194,118 +169,40 @@ router.get('/', async (req, res) => {
         
         // Update the filtering and display
         console.log('\n🔍 Filtering processed pairs...');
-        allPairs = processedPairs.filter(pair => {
-            console.log(`\nChecking ${pair.baseToken.symbol}:`);
-            console.log(`Market Cap: $${pair.marketCap}`);
-            console.log(`Liquidity: $${pair.liquidity?.usd || pair.liquidity}`);
+        const minMarketCap = 300000;
+        const maxMarketCap = 15000000;
 
-            if (pair.marketCap < 300000 || pair.marketCap > 15000000) {
-                console.log(`Filtered out ${pair.baseToken.symbol}: Market Cap $${pair.marketCap} outside range $300k-$15M`);
-                return false;
-            }
-            
-            const liquidityUsd = pair.liquidity?.usd || pair.liquidity;
-            if (liquidityUsd < minLiquidity) {
-                console.log(`Filtered out ${pair.baseToken.symbol}: Liquidity $${liquidityUsd} < $${minLiquidity}`);
-                return false;
-            }
-
-            console.log(`✅ ${pair.baseToken.symbol} passed all filters`);
-            return true;
+        const filteredPairs = processedPairs.filter(pair => {
+            const marketCap = pair.marketCap || 0;
+            const liquidity = pair.liquidity?.usd || 0;
+            console.log(`Checking ${pair.baseToken.symbol}: Market Cap: $${marketCap}, Liquidity: $${liquidity}`);
+            return marketCap >= minMarketCap && marketCap <= maxMarketCap && liquidity >= minLiquidity;
         });
 
-        // Print summary
-        console.log('\n📊 Filtering Summary:');
         console.log(`Total tokens: ${processedPairs.length}`);
-        console.log(`Passed filters: ${allPairs.length}`);
-        console.log(`Min liquidity: $${minLiquidity}`);
+        console.log(`Passed filters: ${filteredPairs.length}`);
+        console.log(`Min liquidity: $${minLiquidity}\n`);
 
-        console.log('\nReturning', allPairs.length, 'tokens after filtering\n');
+        for (const pair of filteredPairs) {
+            const creationDate = new Date(pair.pairCreatedAt || Date.now());  // Adjust this to the correct property
+            const ageInDays = Math.floor((Date.now() - creationDate.getTime()) / (1000 * 60 * 60 * 24));
+            const ageStr = ageInDays ? `${ageInDays} days old` : 'Unknown age';
+            const marketCap = pair.marketCap ? `\x1b[94m$${pair.marketCap.toLocaleString()}\x1b[0m` : 'Unknown mcap';  // Light blue
+            const liquidity = pair.liquidity?.usd ? `\x1b[92m$${pair.liquidity.usd.toLocaleString()}\x1b[0m` : 'Unknown liquidity';  // Light green
+            const holders = pair.holders?.count || 'Unknown';
+            const whaleConcentration = pair.holders?.whaleConcentration || 0;  // Assuming this is a percentage
 
-        // Update the display format to include age
-        allPairs.forEach(pair => {
-            const ageStr = pair.age ? `⏰ ${pair.age}d` : '⏰ Unknown';
-            console.log(`🔍 ${pair.baseToken.symbol}  💰 $${pair.marketCap.toFixed(2)}  ${ageStr}`);
-        });
+            // Visual representation of whale concentration
+            const whaleBar = '🐋'.repeat(Math.round(whaleConcentration / 10));  // Each whale represents 10%
 
-        // After getting timeFiltered pairs...
-        console.log('\n🔄 Processing pairs for creation dates...');
-
-        for (const pair of pairs) {
-            console.log(`\nProcessing ${pair.baseToken?.symbol}...`);
-            
-            if (pair.baseToken?.address?.startsWith('0x')) {  // Ethereum token
-                try {
-                    const url = `https://deep-index.moralis.io/api/v2.2/${pair.baseToken.address}/logs?limit=1&order=ASC`;
-                    console.log('Calling Moralis:', url);
-                    console.log('Token address:', pair.baseToken.address);
-                    
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        headers: {
-                            'accept': 'application/json',
-                            'X-API-Key': process.env.MORALIS_API_KEY
-                        }
-                    });
-                    
-                    console.log('Moralis response status:', response.status);
-                    const responseText = await response.text();
-                    console.log('Response body:', responseText);
-                    
-                    if (!response.ok) {
-                        console.error('Error response received');
-                        pair.age = null;
-                        continue;
-                    }
-                    
-                    const data = JSON.parse(responseText);
-                    console.log('Parsed data:', JSON.stringify(data, null, 2));
-                    
-                    if (data && data.result && data.result[0]) {
-                        const firstLog = data.result[0];
-                        const createdAt = new Date(firstLog.block_timestamp);
-                        pair.createdAt = createdAt;
-                        const daysOld = Math.floor((Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
-                        pair.age = daysOld;
-                        console.log(`Token created ${daysOld} days ago (${createdAt.toISOString()})`);
-                    } else {
-                        console.log('No logs found in response');
-                        pair.age = null;
-                    }
-                    
-                } catch (error) {
-                    console.error(`Error fetching logs for ${pair.baseToken.symbol}:`, error);
-                    pair.age = null;
-                }
-            } else {
-                console.log('Not an ETH token:', pair.baseToken);
-                pair.age = null;
-            }
+            console.log(`📈 ${pair.baseToken.symbol}  Market Cap: ${marketCap}  Liquidity: ${liquidity}  ⏰ ${ageStr}  👥 ${holders} holders  🐋 ${whaleConcentration}% ${whaleBar}`);
         }
 
-        // Send response
-        res.json({ 
-            success: true,
-            count: allPairs.length,
-            pairs: allPairs 
-        });
+        res.json(filteredPairs);  // Send the filtered pairs as a response
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
-});
-
-router.get('/test', async (req, res) => {
-  try {
-    res.json({
-      status: 'success',
-      message: 'Test route is working',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Test route error:', error);
-    res.status(500).json({ error: 'Test route error' });
-  }
 });
 
 module.exports = router;
