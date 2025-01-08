@@ -153,10 +153,10 @@ const formatTokenData = async (dexData) => {
   }
 };
 
-// Get pairs from DexScreener with proper error handling
+// Search function
 async function searchPairs() {
-    try {
-        const searches = ['meme', 'memecoin'];  // Keep our working search terms
+   try {
+        const searches = ['meme', 'memecoin'];
         let allPairs = [];
         
         for (const term of searches) {
@@ -176,119 +176,123 @@ async function searchPairs() {
     }
 }
 
+// Main route handler
 router.get('/', async (req, res) => {
-  try {
-    const { minHolders = 0, minLiquidity = 0, sort } = req.query;
-    
-    console.log('\n🔎 Starting token search...');
-    console.log(`Parameters: minLiquidity=$${minLiquidity}, minHolders=${minHolders}\n`);
+    try {
+        const minLiquidity = parseFloat(req.query.minLiquidity) || 50000;
+        const minHolders = parseInt(req.query.minHolders) || 0;
 
-    let allPairs = await searchPairs();
+        console.log('\n🔎 Starting token search...');
+        console.log(`Parameters: minLiquidity=$${minLiquidity}, minHolders=${minHolders}\n`);
 
-    console.log(`Total unique pairs found: ${allPairs.length}`);
-    
-    // Debug liquidity values
-    allPairs.forEach(pair => {
-      console.log(`${pair.baseToken?.symbol}: Liquidity = $${pair.liquidity?.usd || 0}`);
-    });
-
-    // Debug creation dates with human-readable format
-    console.log('\nPair Creation Dates:');
-    allPairs.forEach(pair => {
-        const date = new Date(pair.pairCreatedAt);
-        console.log(`${pair.baseToken?.symbol}: Created ${date.toLocaleString()} (${pair.pairCreatedAt})`);
-    });
-
-    // Filter by creation time (last 120 days)
-    const oneHundredTwentyDaysAgo = Date.now() - (120 * 24 * 60 * 60 * 1000);
-    const timeFiltered = allPairs.filter(pair => {
-        const pairCreatedAt = new Date(pair.pairCreatedAt).getTime();
-        return pairCreatedAt > oneHundredTwentyDaysAgo;
-    });
-
-    console.log(`\nPairs after time filter (last 120 days): ${timeFiltered.length}`);
-
-    // After getting timeFiltered pairs...
-    console.log('\n🔍 Debugging Holder Data:');
-    
-    // Look at first 3 tokens in detail
-    timeFiltered.slice(0, 3).forEach(pair => {
-        console.log(`\n${pair.baseToken?.symbol || 'Unknown Token'}:`);
-        console.log('1. Full Token Data:');
-        console.log(JSON.stringify(pair.baseToken, null, 2));
+        // Get pairs using our search function
+        const pairs = await searchPairs();
         
-        console.log('\n2. Holder-related fields:');
-        console.log('- pair.holders:', pair.holders);
-        console.log('- pair.baseToken.holders:', pair.baseToken?.holders);
-        console.log('- pair.baseToken.holderCount:', pair.baseToken?.holderCount);
+        // Remove the holder processing section
+        console.log('\n🔄 Processing pairs...');
+        const processedPairs = pairs;  // Just pass through the pairs without holder processing
         
-        console.log('\n3. Token Address:', pair.baseToken?.address);
-    });
+        // Update the filtering and display
+        console.log('\n🔍 Filtering processed pairs...');
+        allPairs = processedPairs.filter(pair => {
+            console.log(`\nChecking ${pair.baseToken.symbol}:`);
+            console.log(`Market Cap: $${pair.marketCap}`);
+            console.log(`Liquidity: $${pair.liquidity?.usd || pair.liquidity}`);
 
-    // Now apply liquidity, market cap, and holders filters
-    allPairs = timeFiltered.filter(pair => {
-        const liquidity = parseFloat(pair.liquidity?.usd) || 0;
-        const marketCap = parseFloat(pair.fdv) || 0;
-        const holders = parseInt(pair.holders) || 0;
-        
-        const meetsLiquidity = liquidity >= minLiquidity;
-        const meetsMarketCap = marketCap >= 300000 && marketCap <= 15000000;
-        const meetsHolders = holders >= minHolders;
+            if (pair.marketCap < 300000 || pair.marketCap > 15000000) {
+                console.log(`Filtered out ${pair.baseToken.symbol}: Market Cap $${pair.marketCap} outside range $300k-$15M`);
+                return false;
+            }
+            
+            const liquidityUsd = pair.liquidity?.usd || pair.liquidity;
+            if (liquidityUsd < minLiquidity) {
+                console.log(`Filtered out ${pair.baseToken.symbol}: Liquidity $${liquidityUsd} < $${minLiquidity}`);
+                return false;
+            }
 
-        if (!meetsLiquidity) {
-            console.log(`Filtered out ${pair.baseToken?.symbol}: Liquidity $${liquidity} < $${minLiquidity}`);
-        } else if (!meetsMarketCap) {
-            console.log(`Filtered out ${pair.baseToken?.symbol}: Market Cap $${marketCap} outside range $300k-$15M`);
-        } else if (!meetsHolders) {
-            console.log(`Filtered out ${pair.baseToken?.symbol}: Holders ${holders} < ${minHolders}`);
+            console.log(`✅ ${pair.baseToken.symbol} passed all filters`);
+            return true;
+        });
+
+        // Print summary
+        console.log('\n📊 Filtering Summary:');
+        console.log(`Total tokens: ${processedPairs.length}`);
+        console.log(`Passed filters: ${allPairs.length}`);
+        console.log(`Min liquidity: $${minLiquidity}`);
+
+        console.log('\nReturning', allPairs.length, 'tokens after filtering\n');
+
+        // Update the display format to include age
+        allPairs.forEach(pair => {
+            const ageStr = pair.age ? `⏰ ${pair.age}d` : '⏰ Unknown';
+            console.log(`🔍 ${pair.baseToken.symbol}  💰 $${pair.marketCap.toFixed(2)}  ${ageStr}`);
+        });
+
+        // After getting timeFiltered pairs...
+        console.log('\n🔄 Processing pairs for creation dates...');
+
+        for (const pair of pairs) {
+            console.log(`\nProcessing ${pair.baseToken?.symbol}...`);
+            
+            if (pair.baseToken?.address?.startsWith('0x')) {  // Ethereum token
+                try {
+                    const url = `https://deep-index.moralis.io/api/v2.2/${pair.baseToken.address}/logs?limit=1&order=ASC`;
+                    console.log('Calling Moralis:', url);
+                    console.log('Token address:', pair.baseToken.address);
+                    
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'accept': 'application/json',
+                            'X-API-Key': process.env.MORALIS_API_KEY
+                        }
+                    });
+                    
+                    console.log('Moralis response status:', response.status);
+                    const responseText = await response.text();
+                    console.log('Response body:', responseText);
+                    
+                    if (!response.ok) {
+                        console.error('Error response received');
+                        pair.age = null;
+                        continue;
+                    }
+                    
+                    const data = JSON.parse(responseText);
+                    console.log('Parsed data:', JSON.stringify(data, null, 2));
+                    
+                    if (data && data.result && data.result[0]) {
+                        const firstLog = data.result[0];
+                        const createdAt = new Date(firstLog.block_timestamp);
+                        pair.createdAt = createdAt;
+                        const daysOld = Math.floor((Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
+                        pair.age = daysOld;
+                        console.log(`Token created ${daysOld} days ago (${createdAt.toISOString()})`);
+                    } else {
+                        console.log('No logs found in response');
+                        pair.age = null;
+                    }
+                    
+                } catch (error) {
+                    console.error(`Error fetching logs for ${pair.baseToken.symbol}:`, error);
+                    pair.age = null;
+                }
+            } else {
+                console.log('Not an ETH token:', pair.baseToken);
+                pair.age = null;
+            }
         }
 
-        return meetsLiquidity && meetsMarketCap && meetsHolders;
-    });
-
-    // Format token data with enhanced information
-    const tokenPromises = allPairs.map(formatTokenData);
-    const tokens = (await Promise.all(tokenPromises)).filter(Boolean);
-
-    // Filter by minimum holders and liquidity
-    const filteredTokens = tokens.filter(token => {
-      const meetsLiquidity = token.metrics.liquidity >= parseFloat(minLiquidity || 0);
-      const meetsHolders = token.metrics.holders.count >= parseFloat(minHolders || 0);
-      return meetsLiquidity && meetsHolders;
-    });
-
-    console.log('\n📊 Filtering Summary:');
-    console.log(`Total tokens: ${tokens.length}`);
-    console.log(`Passed filters: ${filteredTokens.length}`);
-    console.log(`Min liquidity: $${minLiquidity}`);
-    console.log(`Min holders: ${minHolders}\n`);
-
-    // Sort tokens if specified
-    if (sort) {
-      const sortOptions = sort.split(',');
-      filteredTokens.sort((a, b) => {
-        for (const option of sortOptions) {
-          switch (option) {
-            case 'liquidity':
-              return b.metrics.liquidity - a.metrics.liquidity;
-            case 'holders':
-              return b.metrics.holders.count - a.metrics.holders.count;
-            case 'age':
-              return b.age.days - a.age.days;
-            default:
-              return 0;
-          }
-        }
-        return 0;
-      });
+        // Send response
+        res.json({ 
+            success: true,
+            count: allPairs.length,
+            pairs: allPairs 
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
-
-    console.log(`Returning ${filteredTokens.length} tokens after filtering`);
-    res.json(filteredTokens);
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
 });
 
 router.get('/test', async (req, res) => {
