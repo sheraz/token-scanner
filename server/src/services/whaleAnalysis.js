@@ -1,74 +1,187 @@
+console.log('Loading WhaleAnalyzer module');
+
+const fs = require('fs');
+const fsPromises = require('fs').promises;
+const path = require('path');
 const axios = require('axios');
 
 class WhaleAnalyzer {
   constructor() {
+    console.log('Current directory:', __dirname);
+    console.log('Log directory path:', path.join(__dirname, '../../logs'));
+    
     this.cache = new Map();
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
+    this.cacheTimeout = 5 * 60 * 1000;
+    this.lastRequestTime = 0;
+    this.minRequestInterval = 500;
+    
+    this.logDir = path.join(__dirname, '../../logs');
+    this.maxLogSize = 5 * 1024 * 1024;
+    this.maxLogFiles = 3;
+
+    if (!fs.existsSync(this.logDir)) {
+      fs.mkdirSync(this.logDir, { recursive: true });
+      console.log('Created log directory at:', this.logDir);
+    }
   }
 
-  async getTopHolders(tokenAddress) {
+  async getTopHolders(tokenAddress, tokenSymbol) {
     try {
-      if (tokenAddress.startsWith('0x')) {
-        // Ethereum token
-        const response = await axios.get(`https://api.etherscan.io/api`, {
-          params: {
-            module: 'token',
-            action: 'tokenholderlist',
-            contractaddress: tokenAddress,
-            page: 1,
-            offset: 10, // Get top 10 holders
-            apikey: process.env.ETHERSCAN_API_KEY
-          }
-        });
-
-        if (response.data.status === '1') {
-          return response.data.result;
-        }
-      } else if (tokenAddress.length === 44 || tokenAddress.length === 43) {
-        // Solana token
-        const response = await axios.post('https://api.mainnet-beta.solana.com', {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getTokenLargestAccounts',
-          params: [tokenAddress]
-        });
-
-        if (response.data?.result?.value) {
-          return response.data.result.value;
+      const cacheKey = `holders_${tokenAddress}`;
+      if (this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey);
+        if (Date.now() - cached.timestamp < this.cacheTimeout) {
+          return cached.data;
         }
       }
-      return [];
+
+      const dexUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+      const response = await axios.get(dexUrl);
+      
+      let holderCount = 0;
+      let totalSupply = 0;
+
+      // Get holder count based on chain
+      if (tokenAddress.startsWith('0x')) {
+        const ethData = await this.ethereumService.getHolderCount(tokenAddress);
+        holderCount = ethData.holderCount;
+      } else if (tokenAddress.length === 44 || tokenAddress.length === 43) {
+        const solData = await this.solanaService.getHolderCount(tokenAddress);
+        holderCount = solData.holderCount;
+      }
+
+      if (response.data.pairs && response.data.pairs.length > 0) {
+        const pair = response.data.pairs[0];
+        totalSupply = parseFloat(pair.totalSupply || 0);
+        
+        if (pair.liquidity?.usd > 50000) {
+          console.log(`\n🔍 ${tokenSymbol.padEnd(8)} 💰 $${pair.liquidity.usd.toLocaleString()} 👥 ${holderCount.toLocaleString() || 'Unknown'} holders`);
+        }
+      }
+
+      const result = { totalSupply, holderCount };
+      this.cache.set(cacheKey, {
+        timestamp: Date.now(),
+        data: result
+      });
+
+      return result;
     } catch (error) {
-      console.error(`Error fetching top holders for ${tokenAddress}:`, error.message);
-      return [];
+      console.error(`❌ Error processing ${tokenSymbol}:`, error.message);
+      return { totalSupply: 0, holderCount: 0 };
     }
   }
 
-  async calculateWhaleConcentration(tokenAddress) {
-    const cacheKey = `whale_${tokenAddress}`;
-    if (this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.cacheTimeout) {
-        return cached.data;
+  processTransfers(transfers) {
+    if (!transfers || !Array.isArray(transfers)) {
+      console.log('No transfers to process');
+      return [];
+    }
+    
+    const balances = new Map();
+    
+    for (const tx of transfers) {
+      if (!tx.from || !tx.to || !tx.value) {
+        console.log('Invalid transfer:', tx);
+        continue;
       }
+
+      const from = tx.from.toLowerCase();
+      const to = tx.to.toLowerCase();
+      const value = parseFloat(tx.value) / 1e18;
+      
+      if (!balances.has(from)) balances.set(from, 0);
+      if (!balances.has(to)) balances.set(to, 0);
+      
+      balances.set(from, balances.get(from) - value);
+      balances.set(to, balances.get(to) + value);
+    }
+    
+    const holders = Array.from(balances.entries())
+      .map(([address, balance]) => ({ address, balance }))
+      .filter(h => h.balance > 0)
+      .sort((a, b) => b.balance - a.balance);
+
+    console.log(`Found ${holders.length} holders with positive balances`);
+    if (holders.length > 0) {
+      console.log('Largest holder balance:', holders[0].balance);
+    }
+    return holders;
+  }
+
+  calculateWhaleConcentration(totalSupply, holders) {
+    if (!holders || !Array.isArray(holders) || holders.length === 0 || totalSupply <= 0) {
+      return 0;
     }
 
-    const topHolders = await this.getTopHolders(tokenAddress);
-    let whaleConcentration = 0;
+    const top3Sum = holders.slice(0, 3)
+      .reduce((sum, h) => sum + (h.balance || 0), 0);
+    
+    return (top3Sum / totalSupply) * 100;
+  }
 
-    if (topHolders.length > 0) {
-      // Calculate percentage held by top holders
-      const totalSupply = topHolders.reduce((sum, holder) => sum + parseFloat(holder.balance || holder.uiAmount || 0), 0);
-      const topHoldersSum = topHolders.slice(0, 3).reduce((sum, holder) => sum + parseFloat(holder.balance || holder.uiAmount || 0), 0);
-      whaleConcentration = (topHoldersSum / totalSupply) * 100;
+  async formatTokenData(tokenSymbol, liquidity, whaleData = {}) {
+    try {
+      const result = {
+        liquidity: parseFloat(liquidity),
+        holders: whaleData.whaleConcentration > 0 ? 1 : 0,
+        whaleConcentration: whaleData.whaleConcentration || 0
+      };
+
+      console.log(`Formatted token data for ${tokenSymbol}:`, result);
+      
+      await this.log(tokenSymbol, {
+        type: 'formatted_data',
+        ...result
+      });
+
+      return result;
+    } catch (error) {
+      console.error(`Error formatting data for ${tokenSymbol}:`, error);
+      return {
+        liquidity: parseFloat(liquidity),
+        holders: 0,
+        whaleConcentration: 0
+      };
     }
+  }
 
-    this.cache.set(cacheKey, {
-      timestamp: Date.now(),
-      data: whaleConcentration
-    });
+  async log(tokenSymbol, data) {
+    try {
+      console.log('Attempting to log data for:', tokenSymbol);
+      console.log('Log directory:', this.logDir);
+      
+      const currentDate = new Date().toISOString().split('T')[0];
+      const logFile = path.join(this.logDir, `whale-analysis-${currentDate}.log`);
+      console.log('Writing to log file:', logFile);
+      
+      const logEntry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        token: tokenSymbol,
+        ...data
+      }, null, 2) + '\n\n';
 
-    return whaleConcentration;
+      await fsPromises.mkdir(this.logDir, { recursive: true });
+      
+      await fsPromises.writeFile(logFile, logEntry, { flag: 'a' });
+      console.log('Successfully wrote log entry');
+    } catch (error) {
+      console.error('Logging failed:', error);
+      console.error('Error details:', {
+        dir: this.logDir,
+        error: error.message,
+        stack: error.stack
+      });
+    }
+  }
+
+  async rateLimit() {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    if (timeSinceLastRequest < this.minRequestInterval) {
+      await new Promise(resolve => setTimeout(resolve, this.minRequestInterval - timeSinceLastRequest));
+    }
+    this.lastRequestTime = Date.now();
   }
 }
 

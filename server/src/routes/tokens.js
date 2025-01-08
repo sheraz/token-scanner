@@ -4,6 +4,10 @@ const axios = require('axios');
 require('dotenv').config();
 const SocialAnalyzer = require('../services/socialAnalysis');
 const socialAnalyzer = new SocialAnalyzer(process.env.TWITTER_BEARER_TOKEN);
+const WhaleAnalyzer = require('../services/whaleAnalysis');
+
+// Create a single instance to be used throughout the app
+const whaleAnalyzer = new WhaleAnalyzer();
 
 router.get('/test', async (req, res) => {
   try {
@@ -133,6 +137,11 @@ const formatTokenData = async (dexData) => {
       };
     }
 
+    // Add debug logging for whale concentration
+    const whaleData = await whaleAnalyzer.getTopHolders(dexData.baseToken.address, dexData.baseToken.symbol);
+    const whaleConcentration = whaleData.whaleConcentration;
+    console.log(`Whale concentration for ${dexData.baseToken.symbol}:`, whaleConcentration);
+
     // Enhanced token data structure
     const tokenData = {
       name: dexData.baseToken?.name || 'Unknown',
@@ -154,8 +163,8 @@ const formatTokenData = async (dexData) => {
         
         holders: {
           count: holders,
-          diamondHands: 0, // Will implement in next step
-          whaleConcentration: 0 // Will implement in next step
+          whaleConcentration: whaleConcentration,
+          diamondHands: 0
         }
       },
       
@@ -195,7 +204,8 @@ router.get('/', async (req, res) => {
   try {
     const { minHolders = 0, minLiquidity = 0, sort } = req.query;
     
-    console.log('Received request with params:', { minHolders, minLiquidity, sort });
+    console.log('\n🔎 Starting token search...');
+    console.log(`Parameters: minLiquidity=$${minLiquidity}, minHolders=${minHolders}\n`);
 
     const endpoints = [
       'https://api.dexscreener.com/latest/dex/tokens/trending',
@@ -250,11 +260,14 @@ router.get('/', async (req, res) => {
     const filteredTokens = tokens.filter(token => {
       const meetsLiquidity = token.metrics.liquidity >= parseFloat(minLiquidity || 0);
       const meetsHolders = token.metrics.holders.count >= parseFloat(minHolders || 0);
-      
-      console.log(`Filtering ${token.symbol}: liquidity=${token.metrics.liquidity}, holders=${token.metrics.holders.count}, meets criteria=${meetsLiquidity && meetsHolders}`);
-      
       return meetsLiquidity && meetsHolders;
     });
+
+    console.log('\n📊 Filtering Summary:');
+    console.log(`Total tokens: ${tokens.length}`);
+    console.log(`Passed filters: ${filteredTokens.length}`);
+    console.log(`Min liquidity: $${minLiquidity}`);
+    console.log(`Min holders: ${minHolders}\n`);
 
     // Sort tokens if specified
     if (sort) {
