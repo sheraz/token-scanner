@@ -19,22 +19,35 @@ class SocialScraper {
   async getNitterMetrics(username) {
     if (!this.browser) await this.init();
 
-    const page = await this.browser.newPage();
-    await page.goto(`https://nitter.net/${username}`, { waitUntil: 'domcontentloaded' });
+    const instances = [
+      'https://nitter.1d4.us',
+      'https://nitter.pussthecat.org',
+      'https://nitter.moomoo.me'
+    ];
 
-    // Extract data like followers, tweets, etc.
-    const metrics = await page.evaluate(() => {
-      const followersText = document.querySelector('a[href$="/followers"] span')?.textContent || '0';
-      const tweetsText = document.querySelector('a[href$="/statuses"] span')?.textContent || '0';
+    for (const instance of instances) {
+      try {
+        const page = await this.browser.newPage();
+        await page.goto(`${instance}/${username}`, { waitUntil: 'domcontentloaded' });
 
-      return {
-        followers: parseInt(followersText.replace(/\D/g, ''), 10),
-        tweets: parseInt(tweetsText.replace(/\D/g, ''), 10),
-      };
-    });
+        const metrics = await page.evaluate(() => {
+          const followersText = document.querySelector('a[href$="/followers"] span')?.textContent || '0';
+          const tweetsText = document.querySelector('a[href$="/statuses"] span')?.textContent || '0';
 
-    await page.close();
-    return metrics;
+          return {
+            followers: parseInt(followersText.replace(/\D/g, ''), 10),
+            tweets: parseInt(tweetsText.replace(/\D/g, ''), 10),
+          };
+        });
+
+        await page.close();
+        return metrics;
+      } catch (error) {
+        console.warn(`Failed to fetch from ${instance}, trying next instance...`);
+      }
+    }
+
+    throw new Error('All Nitter instances are unreachable');
   }
 
   // Scrape Telegram group data (if publicly available)
@@ -68,6 +81,7 @@ class SocialScraper {
 
   // Close browser when done
   async close() {
+    
     if (this.browser) {
       await this.browser.close();
       this.browser = null;

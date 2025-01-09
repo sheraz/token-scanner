@@ -8,6 +8,7 @@ const WhaleAnalyzer = require('../services/whaleAnalysis');
 const EthereumService = require('../services/ethereumService');
 const ethereumService = new EthereumService();
 const SolanaService = require('../services/solanaService');
+const RedditAnalyzer = require('../services/socialAnalysis');
 
 // Create a single instance to be used throughout the app
 const whaleAnalyzer = new WhaleAnalyzer();
@@ -186,19 +187,16 @@ router.get('/', async (req, res) => {
         console.log(`Passed filters: ${filteredPairs.length}`);
         console.log(`Min liquidity: $${minLiquidity}\n`);
 
+        console.log('\n📊 Token Summary:');
         for (const pair of filteredPairs) {
-            const creationDate = new Date(pair.pairCreatedAt || Date.now());  // Adjust this to the correct property
-            const ageInDays = Math.floor((Date.now() - creationDate.getTime()) / (1000 * 60 * 60 * 24));
-            const ageStr = ageInDays ? `${ageInDays} days old` : 'Unknown age';
-            const marketCap = pair.marketCap ? `\x1b[94m$${pair.marketCap.toLocaleString()}\x1b[0m` : 'Unknown mcap';  // Light blue
-            const liquidity = pair.liquidity?.usd ? `\x1b[92m$${pair.liquidity.usd.toLocaleString()}\x1b[0m` : 'Unknown liquidity';  // Light green
-            const holders = pair.holders?.count || 'Unknown';
-            const whaleConcentration = pair.holders?.whaleConcentration || 0;  // Assuming this is a percentage
+            const ageStr = pair.age ? `${pair.age} days old` : 'Unknown age';
+            const marketCap = pair.marketCap ? `$${pair.marketCap.toLocaleString()}` : 'Unknown mcap';
+            const liquidity = typeof pair.liquidity === 'number' ? `$${pair.liquidity.toLocaleString()}` : 'Unknown liquidity';
 
-            // Visual representation of whale concentration
-            const whaleBar = '🐋'.repeat(Math.round(whaleConcentration / 10));  // Each whale represents 10%
+            // Use the token's symbol dynamically
+            const socialMetrics = await socialAnalyzer.analyzeCommunity(pair.baseToken.symbol, `twitter-${pair.baseToken.symbol}`);
 
-            console.log(`📈 ${pair.baseToken.symbol}  Market Cap: ${marketCap}  Liquidity: ${liquidity}  ⏰ ${ageStr}  👥 ${holders} holders  🐋 ${whaleConcentration}% ${whaleBar}`);
+            console.log(`📈 ${pair.baseToken.symbol}  Market Cap: ${marketCap}  Liquidity: ${liquidity}  ⏰ ${ageStr}  👥 ${socialMetrics.uniqueUsers} users  🐦 ${socialMetrics.tweetCount} tweets  🔥 Engagement: ${socialMetrics.engagementScore}`);
         }
 
         res.json(filteredPairs);  // Send the filtered pairs as a response
@@ -207,5 +205,18 @@ router.get('/', async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
+async function getTokenSummary(symbol) {
+  try {
+    const communityData = await socialAnalyzer.analyzeCommunity(symbol);
+    console.log('Community Data:', communityData);
+    // Further processing...
+  } catch (error) {
+    console.error('Error in getTokenSummary:', error);
+  }
+}
+
+// Example usage
+getTokenSummary('exampleSymbol');
 
 module.exports = router;

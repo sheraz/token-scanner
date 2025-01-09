@@ -19,7 +19,9 @@
     "express": "^4.21.2",
     "lucide-react": "^0.469.0",
     "puppeteer": "^23.11.1",
-    "sqlite": "^5.1.1"
+    "snoowrap": "^1.23.0",
+    "sqlite": "^5.1.1",
+    "twitter-api-v2": "^1.19.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
